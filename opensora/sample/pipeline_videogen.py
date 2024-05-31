@@ -650,7 +650,7 @@ class VideoGenPipeline(DiffusionPipeline):
             mask_feature=mask_feature,
         )
         if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0) # [2, 97, 4096]
 
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -688,7 +688,7 @@ class VideoGenPipeline(DiffusionPipeline):
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t) # [2, 4, 17, 64, 64]
 
                 current_timestep = t
                 if not torch.is_tensor(current_timestep):

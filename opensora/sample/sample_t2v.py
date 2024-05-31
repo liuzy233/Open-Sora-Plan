@@ -1,5 +1,8 @@
 import math
 import os
+os.environ['CUDA_VISIBLE_DEVICES']='4,5,6,7'
+# os.environ['CUDA_VISIBLE_DEVICES']='1,2,3,4,5,6,7'
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import torch
 import argparse
 import torchvision
@@ -159,5 +162,21 @@ if __name__ == "__main__":
     parser.add_argument('--tile_overlap_factor', type=float, default=0.25)
     parser.add_argument('--enable_tiling', action='store_true')
     args = parser.parse_args()
+
+    args.model_path = "/remote-home1/yeyang/5.25dev/Open-Sora-Plan/cache_dir/models--LanguageBind--Open-Sora-Plan-v1.1.0/snapshots/67665c18220f34e1397595484671f59deb480b23"
+    args.version = "65x512x512"
+    args.num_frames = 65
+    args.height = 512
+    args.width = 512
+    args.cache_dir = "./cache_dir"
+    args.text_encoder_name = "/remote-home1/yeyang/5.25dev/Open-Sora-Plan/cache_dir/models--DeepFloyd--t5-v1_1-xxl/snapshots/c9c625d2ec93667ec579ede125fd3811d1f81d37"
+    args.text_prompt = "examples/prompt_list_0.txt"
+    args.ae = "CausalVAEModel_4x8x8"
+    args.ae_path = "/remote-home1/yeyang/CausalVAEModel_4x8x8"
+    args.save_img_path = "./sample_video_65x512x512"
+    args.fps = 24
+    args.guidance_scale = 7.5
+    args.num_sampling_steps = 150
+    args.enable_tiling=True
 
     main(args)

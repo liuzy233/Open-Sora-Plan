@@ -109,7 +109,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
         self.is_input_continuous = (in_channels is not None) and (patch_size is None)
         self.is_input_vectorized = num_vector_embeds is not None
         # self.is_input_patches = in_channels is not None and patch_size is not None
-        self.is_input_patches = True
+        self.is_input_patches = True # 默认输入patches
 
         if norm_type == "layer_norm" and num_embeds_ada_norm is not None:
             deprecation_message = (
@@ -341,14 +341,14 @@ class LatteT2V(ModelMixin, ConfigMixin):
         #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
         #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
         if attention_mask is None:
-            attention_mask = torch.ones((input_batch_size, frame+use_image_num, h, w), device=hidden_states.device, dtype=hidden_states.dtype)
-        attention_mask = self.vae_to_diff_mask(attention_mask, use_image_num)
+            attention_mask = torch.ones((input_batch_size, frame+use_image_num, h, w), device=hidden_states.device, dtype=hidden_states.dtype) # [2,17,64,64]
+        attention_mask = self.vae_to_diff_mask(attention_mask, use_image_num) # [2,17,32,32]
         dtype = attention_mask.dtype
         attention_mask_compress = F.max_pool2d(attention_mask.float(), kernel_size=self.compress_kv_factor, stride=self.compress_kv_factor)
         attention_mask_compress = attention_mask_compress.to(dtype)
 
-        attention_mask = self.make_attn_mask(attention_mask, frame, hidden_states.dtype)
-        attention_mask_compress = self.make_attn_mask(attention_mask_compress, frame, hidden_states.dtype)
+        attention_mask = self.make_attn_mask(attention_mask, frame, hidden_states.dtype) # [34, 1, 1024]
+        attention_mask_compress = self.make_attn_mask(attention_mask_compress, frame, hidden_states.dtype) # [34, 1, 1024]
 
         # 1 + 4, 1 -> video condition, 4 -> image condition
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
@@ -376,7 +376,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
             hw = (height, width)
             num_patches = height * width
 
-            hidden_states = self.pos_embed(hidden_states.to(self.dtype))  # alrady add positional embeddings
+            hidden_states = self.pos_embed(hidden_states.to(self.dtype))  # alrady add positional embeddings # [34, 1024, 1152]
 
             if self.adaln_single is not None:
                 if self.use_additional_conditions and added_cond_kwargs is None:
@@ -387,12 +387,12 @@ class LatteT2V(ModelMixin, ConfigMixin):
                 batch_size = input_batch_size
                 timestep, embedded_timestep = self.adaln_single(
                     timestep, added_cond_kwargs, batch_size=batch_size, hidden_dtype=hidden_states.dtype
-                )
+                ) # [2,6912], [2,1152]
 
         # 2. Blocks
         if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
-            encoder_hidden_states = self.caption_projection(encoder_hidden_states.to(self.dtype))  # 3 120 1152
+            encoder_hidden_states = self.caption_projection(encoder_hidden_states.to(self.dtype))  # 3 120 1152 # [2,1,97,1152]
 
             if use_image_num != 0 and self.training:
                 encoder_hidden_states_video = encoder_hidden_states[:, :1, ...]

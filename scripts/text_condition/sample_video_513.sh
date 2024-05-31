@@ -1,4 +1,3 @@
-
 CUDA_VISIBLE_DEVICES=4 python opensora/sample/sample_t2v.py \
     --model_path LanguageBind/Open-Sora-Plan-v1.1.0 \
     --version 513x512x512 \

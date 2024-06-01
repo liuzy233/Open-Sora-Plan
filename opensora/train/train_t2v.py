@@ -112,6 +112,7 @@ def log_validation(args, model, vae, text_encoder, tokenizer, accelerator, weigh
 #################################################################################
 
 def main(args):
+    # 参数初始化
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
@@ -123,6 +124,7 @@ def main(args):
         project_config=accelerator_project_config,
     )
 
+    # 日志设置
     if args.report_to == "wandb":
         if not is_wandb_available():
             raise ImportError("Make sure to install wandb if you want to use it for logging during training.")
@@ -141,10 +143,12 @@ def main(args):
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
+    # 设置随机种子
     # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
 
+    # 处理输出目录
     # Handle the repository creation
     if accelerator.is_main_process:
         if args.output_dir is not None:
@@ -155,6 +159,7 @@ def main(args):
         #         repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
         #     ).repo_id
 
+    # 混合精度设置
     # For mixed precision training we cast all non-trainable weigths to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
@@ -166,7 +171,8 @@ def main(args):
     # Create model:
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     kwargs = {}
-    ae = getae_wrapper(args.ae)(args.ae_path, cache_dir=args.cache_dir, **kwargs).eval()
+    ae = getae_wrapper(args.ae)(args.model_path, subfolder="vae", cache_dir=args.cache_dir, **kwargs).eval()
+    # ae = getae_wrapper(args.ae)(args.ae_path, cache_dir=args.cache_dir, **kwargs).eval()
     if args.enable_tiling:
         ae.vae.enable_tiling()
         ae.vae.tile_overlap_factor = args.tile_overlap_factor
@@ -223,7 +229,7 @@ def main(args):
     model.gradient_checkpointing = args.gradient_checkpointing
 
     # # use pretrained model?
-    if args.pretrained:
+    if args.pretrained: # True
         if 'safetensors' in args.pretrained:
             from safetensors.torch import load_file as safe_load
             checkpoint = safe_load(args.pretrained, device="cpu")
@@ -250,7 +256,7 @@ def main(args):
     # text_enc.to(accelerator.device)
 
     # Create EMA for the unet.
-    if args.use_ema:
+    if args.use_ema: # False
         ema_model = deepcopy(model)
         ema_model = EMAModel(ema_model.parameters(), model_cls=LatteT2V, model_config=ema_model.config)
 
@@ -291,16 +297,16 @@ def main(args):
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
-    if args.allow_tf32:
+    if args.allow_tf32: # True
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    if args.scale_lr:
+    if args.scale_lr: # False
         args.learning_rate = (
                 args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
     # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
-    if args.use_8bit_adam:
+    if args.use_8bit_adam: # False
         try:
             import bitsandbytes as bnb
         except ImportError:
@@ -335,7 +341,7 @@ def main(args):
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
+    if args.max_train_steps is None: # False
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
 
@@ -353,7 +359,7 @@ def main(args):
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if overrode_max_train_steps:
+    if overrode_max_train_steps: # False
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
@@ -377,8 +383,8 @@ def main(args):
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
-    if args.resume_from_checkpoint:
-        if args.resume_from_checkpoint != "latest":
+    if args.resume_from_checkpoint: # True
+        if args.resume_from_checkpoint != "latest": # True
             path = os.path.basename(args.resume_from_checkpoint)
         else:
             # Get the most recent checkpoint
@@ -387,7 +393,7 @@ def main(args):
             dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
             path = dirs[-1] if len(dirs) > 0 else None
 
-        if path is None:
+        if path is None: # False
             accelerator.print(
                 f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
             )
@@ -404,6 +410,7 @@ def main(args):
     else:
         initial_global_step = 0
 
+    # 训练循环
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -427,6 +434,7 @@ def main(args):
                 cond_mask = cond_mask.to(accelerator.device)  # B 1+num_images L
                 # print('x.shape, attn_mask.shape, input_ids.shape, cond_mask.shape', x.shape, attn_mask.shape, input_ids.shape, cond_mask.shape)
                 
+                # video and image ae.encode
                 with torch.no_grad():
                     # use for loop to avoid OOM, because T5 is too huge...
                     B, _, _ = input_ids.shape  # B T+num_images L  b 1+4, L
@@ -516,7 +524,7 @@ def main(args):
                 if args.use_deepspeed or accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
+                        if args.checkpoints_total_limit is not None: # Falses
                             checkpoints = os.listdir(args.output_dir)
                             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
                             checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
@@ -547,12 +555,12 @@ def main(args):
 
             if accelerator.is_main_process:
                 if global_step % args.checkpointing_steps == 0:
-                    if args.use_ema:
+                    if args.use_ema: # False
                         # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
                         ema_model.store(model.parameters())
                         ema_model.copy_to(model.parameters())
 
-                    if args.enable_tracker:
+                    if args.enable_tracker: # True
                         log_validation(args, model, ae, text_enc.text_enc, train_dataset.tokenizer, accelerator, weight_dtype, global_step)
 
     accelerator.wait_for_everyone()
@@ -583,6 +591,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained", type=str, default=None)
     parser.add_argument("--ae", type=str, default="stabilityai/sd-vae-ft-mse")
     parser.add_argument("--ae_path", type=str, default="stabilityai/sd-vae-ft-mse")
+    parser.add_argument("--model_path", type=str, default="LanguageBind/Open-Sora-Plan-v1.1.0")
     parser.add_argument("--text_encoder_name", type=str, default='DeepFloyd/t5-v1_1-xxl')
     parser.add_argument("--cache_dir", type=str, default='./cache_dir')
 

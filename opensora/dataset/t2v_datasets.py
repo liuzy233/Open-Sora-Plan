@@ -25,9 +25,9 @@ class T2V_dataset(Dataset):
     def __init__(self, args, transform, temporal_sample, tokenizer):
         self.image_data = args.image_data
         self.video_data = args.video_data
-        self.num_frames = args.num_frames
-        self.use_image_num = args.use_image_num
-        self.use_img_from_vid = args.use_img_from_vid
+        self.num_frames = args.num_frames # 65
+        self.use_image_num = args.use_image_num # 4
+        self.use_img_from_vid = args.use_img_from_vid #False
         self.transform = transform
         self.temporal_sample = temporal_sample
         self.tokenizer = tokenizer

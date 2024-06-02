@@ -71,10 +71,12 @@ class T2V_dataset(Dataset):
         # # print('random shape', video.shape)
         # input_ids = torch.ones(1, 120).to(torch.long).squeeze(0)
         # cond_mask = torch.cat([torch.ones(1, 60).to(torch.long), torch.ones(1, 60).to(torch.long)], dim=1).squeeze(0)
-        
+        video_ori = None
+
         video_path = self.vid_cap_list[idx]['path']
         frame_idx = self.vid_cap_list[idx]['frame_idx']
         video = self.decord_read(video_path, frame_idx)
+        video_ori = video.detach().numpy().copy()
         video = self.transform(video)  # T C H W -> T C H W
         # video = torch.rand(65, 3, 512, 512)
 
@@ -93,7 +95,7 @@ class T2V_dataset(Dataset):
         )
         input_ids = text_tokens_and_mask['input_ids']
         cond_mask = text_tokens_and_mask['attention_mask']
-        return dict(video=video, input_ids=input_ids, cond_mask=cond_mask)
+        return dict(video=video, input_ids=input_ids, cond_mask=cond_mask, video_ori=video_ori)
 
     def get_image_from_video(self, video_data):
         select_image_idx = np.linspace(0, self.num_frames-1, self.use_image_num, dtype=int)
@@ -104,10 +106,13 @@ class T2V_dataset(Dataset):
         return dict(image=image, input_ids=input_ids, cond_mask=cond_mask)
 
     def get_image(self, idx):
+        image_ori = None
+
         idx = idx % len(self.img_cap_list)  # out of range
         image_data = self.img_cap_list[idx]  # [{'path': path, 'cap': cap}, ...]
         
         image = [Image.open(i['path']).convert('RGB') for i in image_data] # num_img [h, w, c]
+        image_ori = image
         image = [torch.from_numpy(np.array(i)) for i in image] # num_img [h, w, c]
         image = [rearrange(i, 'h w c -> c h w').unsqueeze(0) for i in image] # num_img [1 c h w]
         image = [self.transform(i) for i in image]  # num_img [1 C H W] -> num_img [1 C H W]
@@ -131,7 +136,7 @@ class T2V_dataset(Dataset):
             cond_mask.append(text_tokens_and_mask['attention_mask'])
         input_ids = torch.cat(input_ids)  # self.use_image_num, l
         cond_mask = torch.cat(cond_mask)  # self.use_image_num, l
-        return dict(image=image, input_ids=input_ids, cond_mask=cond_mask)
+        return dict(image=image, input_ids=input_ids, cond_mask=cond_mask, image_ori=image_ori)
 
     def tv_read(self, path, frame_idx=None):
         vframes, aframes, info = torchvision.io.read_video(filename=path, pts_unit='sec', output_format='TCHW')

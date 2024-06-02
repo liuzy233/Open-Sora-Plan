@@ -248,6 +248,10 @@ class Attention(nn.Module):
         use_rope: bool = False,
         rope_scaling: Optional[Dict] = None, 
         compress_kv_factor: Optional[Tuple] = None, 
+        image_cross_attention=False, 
+        image_cross_attention_scale=1.0, 
+        image_cross_attention_scale_learnable=False, 
+        text_context_len=300,
     ):
         super().__init__()
         self.inner_dim = dim_head * heads
@@ -341,6 +345,16 @@ class Attention(nn.Module):
         self.to_out = nn.ModuleList([])
         self.to_out.append(linear_cls(self.inner_dim, query_dim, bias=out_bias))
         self.to_out.append(nn.Dropout(dropout))
+
+        self.image_cross_attention = image_cross_attention
+        self.image_cross_attention_scale = image_cross_attention_scale
+        self.text_context_len = text_context_len
+        self.image_cross_attention_scale_learnable = image_cross_attention_scale_learnable
+        if self.image_cross_attention:
+            self.to_k_ip = linear_cls(self.cross_attention_dim, self.inner_dim, bias=False)
+            self.to_v_ip = linear_cls(self.cross_attention_dim, self.inner_dim, bias=False)
+            if image_cross_attention_scale_learnable:
+                self.register_parameter('alpha', nn.Parameter(torch.tensor(0.)) )
 
         # set attention processor
         # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
@@ -891,6 +905,9 @@ class AttnProcessor2_0:
         position_k: Optional[torch.LongTensor] = None,
         last_shape: Tuple[int] = None, 
     ) -> torch.FloatTensor:
+        spatial_self_attn = (encoder_hidden_states is None)
+        key_ip, value_ip, hidden_states_ip = None, None, None
+        
         residual = hidden_states
 
         args = () if USE_PEFT_BACKEND else (scale,)
@@ -922,9 +939,14 @@ class AttnProcessor2_0:
                 
             encoder_hidden_states = attn.norm(encoder_hidden_states)
 
-        batch_size, sequence_length, _ = (
-            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-        )
+        if attn.image_cross_attention and not spatial_self_attn:
+            batch_size, sequence_length, _ = (
+                hidden_states.shape if encoder_hidden_states[:,:attn.text_context_len,:] is None else encoder_hidden_states[:,:attn.text_context_len,:].shape
+            )
+        else:
+            batch_size, sequence_length, _ = (
+                hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+            )
 
         if attention_mask is not None:
             attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
@@ -943,10 +965,20 @@ class AttnProcessor2_0:
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        
+        if attn.image_cross_attention and not spatial_self_attn:
+            encoder_hidden_states, context_image = encoder_hidden_states[:,:attn.text_context_len,:], encoder_hidden_states[:,attn.text_context_len:,:]
+            key = attn.to_k(encoder_hidden_states, *args)
+            value = attn.to_v(encoder_hidden_states, *args)
+            key_ip = attn.to_k_ip(context_image, *args)
+            value_ip = attn.to_v_ip(context_image, *args)
+        else:
+            if not spatial_self_attn:
+                encoder_hidden_states = encoder_hidden_states[:,:attn.text_context_len,:]
+            key = attn.to_k(encoder_hidden_states, *args)
+            value = attn.to_v(encoder_hidden_states, *args)
 
-        key = attn.to_k(encoder_hidden_states, *args)
-        value = attn.to_v(encoder_hidden_states, *args)
+        # key = attn.to_k(encoder_hidden_states, *args)
+        # value = attn.to_v(encoder_hidden_states, *args)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -955,6 +987,10 @@ class AttnProcessor2_0:
 
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        if key_ip is not None:
+            key_ip = key_ip.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+            value_ip = value_ip.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         if self.use_rope:
             # require the shape of (batch_size x nheads x ntokens x dim)
@@ -984,6 +1020,15 @@ class AttnProcessor2_0:
                 hidden_states = F.scaled_dot_product_attention(
                     query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
                 )
+
+                if key_ip is not None:
+                    # hidden_states_ip = F.scaled_dot_product_attention(
+                    #     query, key_ip, value_ip, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+                    # )
+                    hidden_states_ip = F.scaled_dot_product_attention(
+                        query, key_ip, value_ip, attn_mask=None, dropout_p=0.0, is_causal=False
+                    )
+                
         elif self.attention_mode == 'math':
             hidden_states = F.scaled_dot_product_attention(
                 query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
@@ -992,6 +1037,16 @@ class AttnProcessor2_0:
             raise NotImplementedError(f'Found attention_mode: {self.attention_mode}')
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
+
+        if key_ip is not None:
+            hidden_states_ip = hidden_states_ip.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+            hidden_states_ip = hidden_states_ip.to(query.dtype)
+        
+        if hidden_states_ip is not None:
+            if attn.image_cross_attention_scale_learnable:
+                hidden_states = hidden_states + attn.image_cross_attention_scale * hidden_states_ip * (torch.tanh(attn.alpha)+1)
+            else:
+                hidden_states = hidden_states + attn.image_cross_attention_scale * hidden_states_ip
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states, *args)
@@ -1455,6 +1510,10 @@ class BasicTransformerBlock(nn.Module):
         use_rope: bool = False,
         rope_scaling: Optional[Dict] = None,
         compress_kv_factor: Optional[Tuple] = None, 
+        image_cross_attention=False, 
+        image_cross_attention_scale=1.0, 
+        image_cross_attention_scale_learnable=False, 
+        text_context_len=300,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -1524,10 +1583,16 @@ class BasicTransformerBlock(nn.Module):
                 attention_mode=attention_mode,  # only xformers support attention_mask
                 use_rope=False,  # do not position in cross attention
                 compress_kv_factor=None, 
+                image_cross_attention=image_cross_attention, 
+                image_cross_attention_scale=image_cross_attention_scale, 
+                image_cross_attention_scale_learnable=image_cross_attention_scale_learnable, 
+                text_context_len=text_context_len,
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None
             self.attn2 = None
+            
+        self.image_cross_attention = image_cross_attention
 
         # 3. Feed-forward
         if not self.use_ada_layer_norm_single:
@@ -1569,6 +1634,7 @@ class BasicTransformerBlock(nn.Module):
         position_q: Optional[torch.LongTensor] = None,
         position_k: Optional[torch.LongTensor] = None,
         hw: Tuple[int, int] = None, 
+        hidden_states_concat: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
